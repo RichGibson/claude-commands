@@ -8,11 +8,10 @@ Usage:
 Saves images to ~/todo/img/ and prints markdown for pasting into log_YYYY.md.
 """
 
-import sys, re, json, urllib.request, urllib.parse, subprocess
+import sys, re, json, urllib.request, urllib.parse, subprocess, argparse
 from datetime import datetime
 from pathlib import Path
 
-IMG_DIR = Path.home() / "todo" / "img"
 BSKY_API = "https://public.api.bsky.app/xrpc"
 
 
@@ -128,10 +127,40 @@ def format_date(iso):
         return iso
 
 
+def save_external_thumb(external, slug, rkey_prefix):
+    """Download thumbnail from an external link card. Returns [(path, alt)] or []."""
+    thumb_url = external.get("thumb", "")
+    if not thumb_url:
+        return []
+    fname = f"{slug}_{rkey_prefix}_thumb.png"
+    dest = IMG_DIR / fname
+    download_and_convert(thumb_url, dest)
+    print(f"  saved {dest.name}", file=sys.stderr)
+    alt = external.get("title", "") or ""
+    return [(f"img/{fname}", alt)]
+
+
+def format_external_card(external, images):
+    """Render an external link card as markdown."""
+    uri = external.get("uri", "")
+    title = external.get("title", "") or uri
+    description = external.get("description", "")
+    lines = [f"[{title}]({uri})"]
+    if description:
+        lines.append(f"> {description}")
+    for img_path, img_alt in images:
+        label = img_alt or title
+        lines.append(f"![{label}]({img_path})")
+    return "\n".join(lines)
+
+
 def extract_images_from_embeds(embeds, slug, rkey_prefix):
     for embed in embeds:
-        if embed.get("$type", "").startswith("app.bsky.embed.images"):
+        etype = embed.get("$type", "")
+        if etype.startswith("app.bsky.embed.images"):
             return save_images(embed.get("images", []), slug, rkey_prefix)
+        elif etype.startswith("app.bsky.embed.external"):
+            return save_external_thumb(embed.get("external", {}), slug, rkey_prefix)
     return []
 
 
@@ -147,8 +176,9 @@ def build_quote_block(embed_record):
     q_rkey_prefix = q_rkey[:8] if q_rkey else "quote"
     q_slug = handle_slug(q_handle) if q_handle else "quote"
     q_url = f"https://bsky.app/profile/{q_handle}/post/{q_rkey}" if q_handle and q_rkey else ""
+    q_date = format_date(q_value.get("createdAt", embed_record.get("indexedAt", "")))
 
-    # Images inside the quoted post
+    # Images or external card inside the quoted post
     q_images = extract_images_from_embeds(embed_record.get("embeds", []), q_slug, q_rkey_prefix)
 
     lines = []
@@ -165,6 +195,12 @@ def build_quote_block(embed_record):
     for img_path, img_alt in q_images:
         label = img_alt or img_path.split("/")[-1].rsplit(".", 1)[0]
         lines.append(f"> ![{label}]({img_path})")
+
+    # Link back to the original quoted post
+    if q_url:
+        lines.append(">")
+        date_label = q_date if q_date else "post"
+        lines.append(f"> 🦋 [{date_label}]({q_url})")
 
     return "\n".join(lines), q_images, q_url
 
@@ -185,26 +221,35 @@ def build_markdown(post):
     etype = embed.get("$type", "")
 
     main_images = []
+    external_card = ""
     quote_block = ""
     quote_images = []
 
     if etype.startswith("app.bsky.embed.images"):
         main_images = save_images(embed.get("images", []), slug, rkey_prefix)
 
-    elif etype.startswith("app.bsky.embed.record"):
-        # Pure quote post (no media attached to main post)
-        # embed.record is the viewRecord of the quoted post
-        view_record = embed.get("record", {})
-        quote_block, quote_images, _ = build_quote_block(view_record)
+    elif etype.startswith("app.bsky.embed.external"):
+        external = embed.get("external", {})
+        main_images = save_external_thumb(external, slug, rkey_prefix)
+        external_card = format_external_card(external, main_images)
 
     elif etype.startswith("app.bsky.embed.recordWithMedia"):
-        # Quote post + images on main post
+        # Quote post + media (images or external link card) on main post
         media = embed.get("media", {})
-        if media.get("$type", "").startswith("app.bsky.embed.images"):
+        mtype = media.get("$type", "")
+        if mtype.startswith("app.bsky.embed.images"):
             main_images = save_images(media.get("images", []), slug, rkey_prefix)
-        # The nested record wrapper: embed.record.$type = "app.bsky.embed.record#view"
+        elif mtype.startswith("app.bsky.embed.external"):
+            external = media.get("external", {})
+            main_images = save_external_thumb(external, slug, rkey_prefix)
+            external_card = format_external_card(external, main_images)
         record_wrapper = embed.get("record", {})
         view_record = record_wrapper.get("record", record_wrapper)
+        quote_block, quote_images, _ = build_quote_block(view_record)
+
+    elif etype.startswith("app.bsky.embed.record"):
+        # Pure quote post (no media attached to main post)
+        view_record = embed.get("record", {})
         quote_block, quote_images, _ = build_quote_block(view_record)
 
     # Assemble markdown
@@ -213,6 +258,10 @@ def build_markdown(post):
         "",
         text,
     ]
+
+    if external_card:
+        parts.append("")
+        parts.append(external_card)
 
     if quote_block:
         parts.append("")
@@ -225,8 +274,8 @@ def build_markdown(post):
 
     result = "\n".join(parts)
 
-    # Append standalone image references for main post images
-    if main_images:
+    # Append standalone image references for non-external main images
+    if main_images and not external_card:
         result += "\n\n"
         for img_path, img_alt in main_images:
             label = img_alt or img_path.split("/")[-1].rsplit(".", 1)[0]
@@ -236,16 +285,34 @@ def build_markdown(post):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("url", help="Bluesky post URL")
+    parser.add_argument("--commonplace", action="store_true",
+                        help="Save images to ~/todo/commonplace/img/ instead of ~/todo/img/")
+    args = parser.parse_args()
 
-    url = sys.argv[1]
-    at_uri = extract_at_uri(url)
+    global IMG_DIR
+    if args.commonplace:
+        IMG_DIR = Path.home() / "todo" / "commonplace" / "img"
+    else:
+        IMG_DIR = Path.home() / "todo" / "img"
+
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+
+    at_uri = extract_at_uri(args.url)
     print(f"Fetching {at_uri}", file=sys.stderr)
     post = fetch_post(at_uri)
     author_handle = post["author"].get("handle", "")
+    rkey = post["uri"].split("/")[-1]
     print(f"Post by @{author_handle}", file=sys.stderr)
+
+    if args.commonplace:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        slug = handle_slug(author_handle)
+        rkey_prefix = rkey[:8]
+        suggested_filename = f"{date_str}_{slug}-{rkey_prefix}.md"
+        print(f"# FILENAME: {suggested_filename}", file=sys.stderr)
+
     print(build_markdown(post))
 
 

@@ -34,4 +34,15 @@ copy-pasteable markdown formatted like a skeet for pasting into a journal or log
 - Images downloaded to `~/todo/img/` as PNG with markdown image references
 - Butterfly emoji footer linking back to the original post
 
-**Note:** Image output path `~/todo/img/` is currently hardcoded. PRs welcome to make it configurable.
+### `/rlg:commonplace-bluesky <url>`
+
+Fetches a Bluesky post, asks for your reaction, and writes a dated file to `~/todo/commonplace/`. Images go to `~/todo/commonplace/img/`.
+
+After fetching the post it asks: *"Why did you save this? What connected with you?"* — your answer becomes the Reaction section of the commonplace entry. It also suggests links to relevant wiki pages based on the content.
+
+**Example:**
+```
+/rlg:commonplace-bluesky https://bsky.app/profile/someone.bsky.social/post/abc123
+```
+
+**Output file:** `~/todo/commonplace/YYYY-MM-DD_handle-rkey.md`
