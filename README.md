@@ -34,6 +34,20 @@ copy-pasteable markdown formatted like a skeet for pasting into a journal or log
 - Images downloaded to `~/todo/img/` as PNG with markdown image references
 - Butterfly emoji footer linking back to the original post
 
+### `/rlg:git-ship [file ...]`
+
+Stage, commit, and push changes in the current git repository. Drafts a commit message using conventional commit format (`feat:`, `fix:`, `docs:`, etc.), shows you the proposed message and file list, asks for confirmation, then commits and pushes.
+
+Optionally pass specific filenames to stage only those; otherwise stages all relevant changes.
+
+**Example:**
+```
+/rlg:git-ship
+/rlg:git-ship scripts/bluesky.py README.md
+```
+
+---
+
 ### `/rlg:commonplace-bluesky <url>`
 
 Fetches a Bluesky post, asks for your reaction, and writes a dated file to `~/todo/commonplace/`. Images go to `~/todo/commonplace/img/`.
